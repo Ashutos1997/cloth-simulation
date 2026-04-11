@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cloth Simulation</title>
+  <style>
+    /* ── Reset & layout ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #0d0d12;
+    }
+    canvas {
+      display: block;
+      width: 100%; height: 100%;
+    }
+
+    /* ── HUD overlay ── */
+    #hud {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      color: rgba(255, 255, 255, 0.55);
+      font: 13px/1.7 'Courier New', monospace;
+      pointer-events: none;
+      user-select: none;
+    }
+    #hud .title {
+      font-size: 15px;
+      font-weight: bold;
+      color: rgba(255, 255, 255, 0.80);
+      margin-bottom: 4px;
+      letter-spacing: 0.08em;
+    }
+    #hud .key { color: #c3a07a; }
+    #hud .mode {
+      margin-top: 6px;
+      color: #e08060;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<!-- HUD: always-visible controls reference -->
+<div id="hud">
+  <div class="title">CLOTH SIM</div>
+  <div><span class="key">Drag</span>  — pull the cloth</div>
+  <div><span class="key">T</span>     — tear mode (hold near cloth)</div>
+  <div><span class="key">R</span>     — reset cloth</div>
+  <div><span class="key">W</span>     — toggle wind</div>
+  <div id="hudMode" class="mode"></div>
+</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   CONFIG — tweak these to change simulation feel
+   ============================================================ */
+const COLS          = 30;      // grid width  (number of points)
+const ROWS          = 30;      // grid height (number of points)
+const SPACING       = 18;      // pixel distance between adjacent points at rest
+const GRAVITY       = 0.5;     // downward acceleration per frame
+const DAMPING       = 0.99;    // velocity damping (1 = no damping)
+const ITERATIONS    = 8;       // constraint relaxation passes per frame
+const TEAR_DIST     = 60;      // max stretch ratio before auto-tear (× rest length)
+const MOUSE_RADIUS  = 36;      // px radius for drag / tear interaction
+const WIND_STRENGTH = 1.2;     // peak horizontal wind force
+const WIND_SPEED    = 0.03;    // oscillation speed (radians / frame)
+
+/* Cloth colour (denim blue base) — r,g,b in [0,255] */
+const CLOTH_COLOR   = { r: 72,  g: 108, b: 175 };
+/* Stretched colour (slightly lighter / washed) */
+const STRETCH_COLOR = { r: 180, g: 200, b: 230 };
+
+/* ============================================================
+   Point — a single mass in the Verlet cloth simulation
+   ============================================================ */
+class Point {
+  /**
+   * @param {number} x  initial X position
+   * @param {number} y  initial Y position
+   * @param {boolean} pinned  if true this point never moves
+   */
+  constructor(x, y, pinned = false) {
+    this.x     = x;     // current position
+    this.y     = y;
+    this.prevX = x;     // previous position (used by Verlet integration)
+    this.prevY = y;
+    this.pinned = pinned;
+
+    /* Store the initial position so we can reset cleanly */
+    this.initX = x;
+    this.initY = y;
+  }
+
+  /**
+   * Verlet integration step.
+   * Derives velocity from the difference between current and previous positions,
+   * applies an external acceleration (gravity + wind), then advances.
+   *
+   * @param {number} ax  horizontal acceleration this frame
+   * @param {number} ay  vertical acceleration this frame (gravity)
+   */
+  update(ax, ay) {
+    if (this.pinned) return;          // pinned points are immovable
+
+    const vx = (this.x - this.prevX) * DAMPING;
+    const vy = (this.y - this.prevY) * DAMPING;
+
+    /* Save current as previous before moving */
+    this.prevX = this.x;
+    this.prevY = this.y;
+
+    /* Advance using inferred velocity + acceleration */
+    this.x += vx + ax;
+    this.y += vy + ay;
+  }
+
+  /** Restore this point to its initial resting position. */
+  reset() {
+    this.x     = this.initX;
+    this.y     = this.initY;
+    this.prevX = this.initX;
+    this.prevY = this.initY;
+  }
+}
+
+/* ============================================================
+   Constraint — a distance constraint linking two Points
+   ============================================================ */
+class Constraint {
+  /**
+   * @param {Point} p1
+   * @param {Point} p2
+   */
+  constructor(p1, p2) {
+    this.p1 = p1;
+    this.p2 = p2;
+    /* Rest length is the Euclidean distance at construction time */
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    this.restLength = Math.sqrt(dx * dx + dy * dy);
+    this.active = true;   // set to false to "tear" this constraint
+  }
+
+  /**
+   * Project p1 and p2 toward each other so that their distance
+   * equals restLength. This is the Jakobsen constraint relaxation step.
+   * Auto-tears the constraint when stretch exceeds TEAR_DIST × restLength.
+   */
+  satisfy() {
+    if (!this.active) return;
+
+    const dx     = this.p2.x - this.p1.x;
+    const dy     = this.p2.y - this.p1.y;
+    const dist   = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+    const diff   = (dist - this.restLength) / dist;
+
+    /* Auto-tear when stretch is extreme */
+    if (dist > this.restLength * TEAR_DIST) {
+      this.active = false;
+      return;
+    }
+
+    /* Distribute correction:
+       - If both movable: split 50/50
+       - If one is pinned: apply the full correction to the movable endpoint
+         so the anchor stays truly rigid. */
+    const fullOffsetX = dx * diff;
+    const fullOffsetY = dy * diff;
+
+    if (!this.p1.pinned && !this.p2.pinned) {
+      this.p1.x += fullOffsetX * 0.5; this.p1.y += fullOffsetY * 0.5;
+      this.p2.x -= fullOffsetX * 0.5; this.p2.y -= fullOffsetY * 0.5;
+    } else if (!this.p1.pinned) {
+      this.p1.x += fullOffsetX;       this.p1.y += fullOffsetY;
+    } else if (!this.p2.pinned) {
+      this.p2.x -= fullOffsetX;       this.p2.y -= fullOffsetY;
+    }
+  }
+
+  /**
+   * Draw this constraint as a coloured line.
+   * Colour blends from CLOTH_COLOR (relaxed) → STRETCH_COLOR (taut).
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   */
+  draw(ctx) {
+    if (!this.active) return;
+
+    const dx   = this.p2.x - this.p1.x;
+    const dy   = this.p2.y - this.p1.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    /* Normalise stretch 0→1 (clamp at 2× rest length for colour purposes) */
+    const t = Math.min((dist / this.restLength - 1) / 1.0, 1);
+
+    /* Linear blend between base cloth colour and stretched colour */
+    const r = Math.round(CLOTH_COLOR.r + t * (STRETCH_COLOR.r - CLOTH_COLOR.r));
+    const g = Math.round(CLOTH_COLOR.g + t * (STRETCH_COLOR.g - CLOTH_COLOR.g));
+    const b = Math.round(CLOTH_COLOR.b + t * (STRETCH_COLOR.b - CLOTH_COLOR.b));
+    const a = Math.max(0.15, 1 - t * 0.6);  // fade out heavily stretched segments
+
+    ctx.strokeStyle = `rgba(${r},${g},${b},${a})`;
+    ctx.beginPath();
+    ctx.moveTo(this.p1.x, this.p1.y);
+    ctx.lineTo(this.p2.x, this.p2.y);
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   Cloth — owns and manages a 30×30 grid of Points and Constraints
+   ============================================================ */
+class Cloth {
+  /**
+   * @param {number} originX  pixel X of the top-left pinned point
+   * @param {number} originY  pixel Y of the top-left pinned point
+   */
+  constructor(originX, originY) {
+    this.originX = originX;
+    this.originY = originY;
+    this.points      = [];   // flat array [row * COLS + col]
+    this.constraints = [];
+    this._build();
+  }
+
+  /** Create the grid of points and stitch constraints between neighbours. */
+  _build() {
+    this.points      = [];
+    this.constraints = [];
+
+    /* ── Create points ── */
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const x      = this.originX + col * SPACING;
+        const y      = this.originY + row * SPACING;
+        const pinned = row === 0;   // top row is pinned
+        this.points.push(new Point(x, y, pinned));
+      }
+    }
+
+    /* ── Create constraints ── */
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const idx = row * COLS + col;
+
+        /* Horizontal constraint → neighbour to the right */
+        if (col < COLS - 1) {
+          this.constraints.push(new Constraint(
+            this.points[idx],
+            this.points[idx + 1]
+          ));
+        }
+
+        /* Vertical constraint → neighbour below */
+        if (row < ROWS - 1) {
+          this.constraints.push(new Constraint(
+            this.points[idx],
+            this.points[idx + COLS]
+          ));
+        }
+      }
+    }
+  }
+
+  /**
+   * Advance the simulation by one frame.
+   *
+   * @param {number} windX  horizontal wind force this frame
+   */
+  update(windX) {
+    /* 1. Integrate each point (apply gravity + wind) */
+    for (const pt of this.points) {
+      pt.update(windX, GRAVITY);
+    }
+
+    /* 2. Relax constraints multiple times for stability */
+    for (let i = 0; i < ITERATIONS; i++) {
+      for (const c of this.constraints) {
+        c.satisfy();
+      }
+    }
+  }
+
+  /**
+   * Render the cloth to the canvas.
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   */
+  draw(ctx) {
+    ctx.lineWidth = 1.2;
+    for (const c of this.constraints) {
+      c.draw(ctx);
+    }
+  }
+
+  /**
+   * Reset every point back to its initial position and reactivate
+   * any torn constraints.
+   */
+  reset() {
+    for (const pt of this.points) {
+      pt.reset();
+    }
+    for (const c of this.constraints) {
+      c.active = true;
+    }
+  }
+
+  /**
+   * Find the point closest to (mx, my) within MOUSE_RADIUS.
+   *
+   * @param {number} mx
+   * @param {number} my
+   * @returns {Point|null}
+   */
+  nearestPoint(mx, my) {
+    let best = null;
+    let bestDist = MOUSE_RADIUS;
+    for (const pt of this.points) {
+      const dx = pt.x - mx;
+      const dy = pt.y - my;
+      const d  = Math.sqrt(dx * dx + dy * dy);
+      if (d < bestDist) { bestDist = d; best = pt; }
+    }
+    return best;
+  }
+
+  /**
+   * Remove (tear) all active constraints whose midpoint is within
+   * MOUSE_RADIUS of (mx, my).
+   *
+   * @param {number} mx
+   * @param {number} my
+   */
+  tearNear(mx, my) {
+    const r2 = MOUSE_RADIUS * MOUSE_RADIUS;
+    for (const c of this.constraints) {
+      if (!c.active) continue;
+      const midX = (c.p1.x + c.p2.x) * 0.5;
+      const midY = (c.p1.y + c.p2.y) * 0.5;
+      const dx   = midX - mx;
+      const dy   = midY - my;
+      if (dx * dx + dy * dy < r2) {
+        c.active = false;
+      }
+    }
+  }
+}
+
+/* ============================================================
+   Main — canvas setup, event handling, animation loop
+   ============================================================ */
+(function main() {
+  const canvas  = document.getElementById('canvas');
+  const ctx     = canvas.getContext('2d');
+  const hudMode = document.getElementById('hudMode');
+
+  /* ── Resize canvas to fill window ── */
+  function resize() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ── Create cloth, centred horizontally near the top ── */
+  function makeCloth() {
+    const clothWidth  = (COLS - 1) * SPACING;
+    const originX     = Math.round((canvas.width  - clothWidth) / 2);
+    const originY     = Math.round(canvas.height * 0.08);
+    return new Cloth(originX, originY);
+  }
+
+  let cloth = makeCloth();
+
+  /* ── State flags ── */
+  let windEnabled  = false;
+  let tearMode     = false;
+  let windPhase    = 0;        // oscillation angle (radians)
+  let mouse        = { x: 0, y: 0, down: false };
+  let draggedPoint = null;     // the Point currently being dragged
+
+  /* ── Mouse events ── */
+  canvas.addEventListener('mousedown', e => {
+    mouse.down = true;
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+    if (!tearMode) {
+      draggedPoint = cloth.nearestPoint(mouse.x, mouse.y);
+    }
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+    /* Tear whenever the mouse moves while tear mode is active (button optional) */
+    if (tearMode) {
+      cloth.tearNear(mouse.x, mouse.y);
+    }
+    if (mouse.down && draggedPoint && !tearMode) {
+      /* Move dragged point directly to mouse (it's effectively "pinned" to cursor) */
+      draggedPoint.x     = mouse.x;
+      draggedPoint.y     = mouse.y;
+      draggedPoint.prevX = mouse.x;
+      draggedPoint.prevY = mouse.y;
+    }
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    mouse.down   = false;
+    draggedPoint = null;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    mouse.down   = false;
+    draggedPoint = null;
+  });
+
+  /* ── Touch support (maps single touch → mouse events) ── */
+  function touchToMouse(e) {
+    if (e.touches.length === 0) return { clientX: mouse.x, clientY: mouse.y };
+    return { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY };
+  }
+
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = touchToMouse(e);
+    canvas.dispatchEvent(new MouseEvent('mousedown', t));
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    const t = touchToMouse(e);
+    canvas.dispatchEvent(new MouseEvent('mousemove', t));
+  }, { passive: false });
+
+  canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    canvas.dispatchEvent(new MouseEvent('mouseup'));
+  }, { passive: false });
+
+  /* ── Keyboard events ── */
+  window.addEventListener('keydown', e => {
+    switch (e.key.toUpperCase()) {
+      case 'T':
+        tearMode = !tearMode;
+        /* Immediately tear constraints near the current cursor position */
+        if (tearMode) cloth.tearNear(mouse.x, mouse.y);
+        updateHUD();
+        break;
+      case 'R':
+        /* Rebuild cloth to match current canvas size */
+        cloth = makeCloth();
+        windEnabled = false;
+        tearMode    = false;
+        updateHUD();
+        break;
+      case 'W':
+        windEnabled = !windEnabled;
+        updateHUD();
+        break;
+    }
+  });
+
+  /* ── HUD helper ── */
+  function updateHUD() {
+    const parts = [];
+    if (tearMode)    parts.push('✂ TEAR MODE');
+    if (windEnabled) parts.push('💨 WIND ON');
+    hudMode.textContent = parts.join('   ');
+  }
+
+  /* ── Animation loop ── */
+  function loop() {
+    requestAnimationFrame(loop);
+
+    /* Clear with a solid dark background */
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#0d0d12';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    /* Compute wind force for this frame */
+    let windX = 0;
+    if (windEnabled) {
+      windPhase += WIND_SPEED;
+      windX = Math.sin(windPhase) * WIND_STRENGTH;
+    }
+
+    /* Step physics */
+    cloth.update(windX);
+
+    /* Draw cloth */
+    cloth.draw(ctx);
+
+    /* Draw a subtle cursor indicator when tearing */
+    if (tearMode) {
+      ctx.beginPath();
+      ctx.arc(mouse.x, mouse.y, MOUSE_RADIUS, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(220,80,60,0.35)';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    }
+  }
+
+  loop();
+})();
+</script>
+</body>
+</html>

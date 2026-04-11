@@ -1,0 +1,1677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cloth Simulation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@200;300;400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pretendard@latest/dist/web/static/pretendard.css" />
+  <script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
+  <style>
+    /* ── Design tokens ── */
+    :root {
+      --surface-bg:      #f5f5f5;
+      --surface-frosted: rgba(248, 248, 248, 0.97);
+      --border-subtle:   rgba(0, 0, 0, 0.07);
+      --border-mid:      rgba(0, 0, 0, 0.15);
+      --border-strong:   rgba(0, 0, 0, 0.20);
+      --text-primary:    #111111;
+      --text-secondary:  #666666;
+      --text-muted:      #767676;
+      --focus-ring:      #0066cc;
+    }
+
+    /* ── Reset & layout ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: var(--surface-bg);
+      font-family: 'Pretendard', sans-serif;
+    }
+    #canvas {
+      display: block;
+      width: 100%; height: 100%;
+    }
+
+    /* ── Overlay canvas — 2D decorations (pinned dots, drag, tear cursor) ── */
+    #overlay {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      display: block;
+    }
+
+    /* ── Film grain overlay — disabled for light theme ── */
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      filter: url(#grain);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 999;
+      transition: opacity 0.3s ease;
+    }
+    body.grain-on::after { opacity: 0.10; }
+    @media (prefers-color-scheme: dark) {
+      body.grain-on::after { opacity: 0.14; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body::after { transition: none; }
+    }
+
+    /* ── HUD panel — no box, just a left accent line ── */
+    #hud {
+      position: fixed;
+      top: 24px;
+      left: 20px;
+      padding: 20px 28px 22px 22px;
+      border-left: 1px solid var(--border-mid);
+      font-family: 'Pretendard', sans-serif;
+      color: #888888;
+      pointer-events: none;
+      user-select: none;
+      min-width: 196px;
+      transition: opacity 0.4s ease;
+    }
+    .hud-hidden {
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+    .hud-hidden * { pointer-events: none !important; }
+    @media (prefers-reduced-motion: reduce) {
+      #hud { transition: none; }
+    }
+
+    /* Brand title */
+    #hud .hud-title {
+      font-size: 26px;
+      font-weight: 200;
+      letter-spacing: 8px;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    /* Subtitle */
+    #hud .hud-subtitle {
+      font-size: 9px;
+      font-weight: 300;
+      letter-spacing: 3.5px;
+      color: var(--text-muted);
+      text-transform: lowercase;
+      margin-bottom: 18px;
+    }
+
+    /* Section group label */
+    #hud .hud-group-label {
+      font-size: 7.5px;
+      font-weight: 500;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      opacity: 0.6;
+    }
+
+    /* Each control row */
+    #hud .hud-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      line-height: 1;
+      margin: 0 -7px 2px;
+      padding: 5px 7px;
+      border-radius: 6px;
+      transition: background 0.12s;
+    }
+    #hud .hud-row:last-of-type { margin-bottom: 0; }
+
+    /* Interactive rows — clickable on desktop */
+    #hud .hud-act {
+      pointer-events: all;
+      cursor: pointer;
+    }
+    #hud .hud-act:hover { background: rgba(0, 0, 0, 0.04); }
+
+    /* Control label text */
+    #hud .hud-row > span:not(.key) {
+      font-size: 10.5px;
+      font-weight: 300;
+      color: var(--text-secondary);
+      letter-spacing: 0.5px;
+      transition: color 0.12s;
+    }
+
+    /* Key badge — outline only, no fill */
+    #hud .key {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 26px;
+      padding: 3px 7px;
+      background: transparent;
+      border: 1px solid var(--border-mid);
+      border-radius: 6px;
+      font-family: 'Pretendard', sans-serif;
+      font-size: 8px;
+      font-weight: 400;
+      text-transform: uppercase;
+      color: #444444;
+      letter-spacing: 1.5px;
+      flex-shrink: 0;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+
+    /* Active row — key badge fills, label brightens */
+    #hud .hud-act.row-on .key {
+      background: rgba(0, 0, 0, 0.08);
+      border-color: rgba(0, 0, 0, 0.30);
+      color: #1a1a1a;
+    }
+    #hud .hud-act.row-on > span:not(.key) {
+      color: var(--text-primary);
+    }
+
+    /* Separator */
+    #hud .hud-sep {
+      height: 1px;
+      background: var(--border-subtle);
+      margin: 10px 0;
+    }
+
+    /* Mode badge row */
+    #hud .hud-modes {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-height: 0;
+    }
+
+    /* Individual mode badge */
+    .mode-badge {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      color: #444444;
+      font-family: 'Pretendard', sans-serif;
+      font-size: 8px;
+      font-weight: 400;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }
+    .mode-badge.visible { display: inline-flex; }
+    .mode-badge::before {
+      content: '';
+      width: 4px; height: 4px;
+      border-radius: 50%;
+      background: #888888;
+      flex-shrink: 0;
+    }
+
+    /* Preset colour swatch dot */
+    .preset-swatch {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 2px;
+      flex-shrink: 0;
+      margin-right: 2px;
+    }
+
+    /* ── Bottom canvas label ── */
+    #canvas-label {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'Pretendard', sans-serif;
+      font-size: 9px;
+      font-weight: 300;
+      letter-spacing: 7px;
+      color: var(--text-muted);
+      text-transform: lowercase;
+      pointer-events: none;
+      user-select: none;
+      white-space: nowrap;
+      opacity: 0.7;
+    }
+
+    /* ── Mobile header + nav bar — hidden on desktop ── */
+    #mob-header { display: none; }
+    #mob-nav    { display: none; }
+
+    /* ── Texture upload section ── */
+    #hud-texture {
+      margin-top: 16px;
+    }
+    #texFile { display: none; }
+    #hud .tex-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 9px;
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      border-radius: 6px;
+      font-family: 'Pretendard', sans-serif;
+      font-size: 9px;
+      font-weight: 300;
+      text-transform: uppercase;
+      color: #444444;
+      letter-spacing: 2px;
+      cursor: pointer;
+      pointer-events: all;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    #hud .tex-btn:hover {
+      background: rgba(0, 0, 0, 0.04);
+      border-color: rgba(0, 0, 0, 0.40);
+      color: #222222;
+    }
+    #texClear {
+      display: none;
+      margin-top: 8px;
+      font-family: 'Pretendard', sans-serif;
+      font-size: 9px;
+      font-weight: 300;
+      letter-spacing: 1px;
+      color: #aaaaaa;
+      cursor: pointer;
+      pointer-events: all;
+      transition: color 0.15s;
+    }
+    #texClear:hover { color: #555555; }
+    #texClear.visible { display: block; }
+
+    #hud-presets {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .preset-btn.active {
+      background: rgba(0, 0, 0, 0.06);
+      border-color: rgba(0, 0, 0, 0.25);
+    }
+    #presetReset {
+      display: none;
+      margin-top: 6px;
+      font-size: 9px;
+      font-weight: 300;
+      letter-spacing: 1px;
+      color: #aaaaaa;
+      cursor: pointer;
+      pointer-events: all;
+      transition: color 0.15s;
+    }
+    #presetReset:hover { color: #555555; }
+    #presetReset.visible { display: block; }
+
+    /* Volume meter bar inside mic badge */
+    .mic-meter {
+      display: inline-block;
+      height: 6px;
+      width: 0px;
+      max-width: 40px;
+      background: #888888;
+      border-radius: 3px;
+      transition: width 0.05s ease;
+    }
+
+    /* ── Mobile layout ≤768px ── */
+    @media (max-width: 768px) {
+      #hud, #canvas-label { display: none !important; }
+
+      #mob-header {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        height: calc(48px + env(safe-area-inset-top));
+        padding-top:   env(safe-area-inset-top);
+        padding-left:  max(16px, env(safe-area-inset-left));
+        padding-right: max(16px, env(safe-area-inset-right));
+        background: var(--surface-frosted);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--border-subtle);
+        z-index: 10;
+        pointer-events: none;
+        user-select: none;
+      }
+      #mob-header .mob-title {
+        font-size: 17px;
+        font-weight: 200;
+        letter-spacing: 6px;
+        color: var(--text-primary);
+        text-transform: uppercase;
+        line-height: 1;
+      }
+      #mob-header .mob-subtitle {
+        font-size: 12px;
+        font-weight: 300;
+        letter-spacing: 2px;
+        color: var(--text-muted);
+        text-transform: lowercase;
+        margin-top: 4px;
+      }
+
+      #mob-nav {
+        display: flex;
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        height: calc(64px + env(safe-area-inset-bottom));
+        padding-bottom: env(safe-area-inset-bottom);
+        padding-left:  max(16px, env(safe-area-inset-left));
+        padding-right: max(16px, env(safe-area-inset-right));
+        background: var(--surface-frosted);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid var(--border-subtle);
+        z-index: 10;
+        align-items: stretch;
+      }
+
+      .mob-btn {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        color: #757575;
+        transition: color 0.15s;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .mob-btn i { font-size: 20px; line-height: 1; }
+      .mob-label {
+        font-family: 'Pretendard', sans-serif;
+        font-size: 10px;
+        font-weight: 300;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+      }
+      .mob-btn.active { color: #111; }
+      .mob-btn:active  { color: #444; }
+
+      /* ── Effects bottom sheet ── */
+      #fx-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.45);
+        z-index: 50;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+      }
+      #fx-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #fx-sheet {
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        background: var(--surface-frosted);
+        border-top: 1px solid var(--border-mid);
+        border-radius: 16px 16px 0 0;
+        padding: 12px 0 calc(16px + env(safe-area-inset-bottom)) 0;
+        z-index: 51;
+        transform: translateY(100%);
+        transition: transform 0.32s cubic-bezier(0.32, 0.72, 0, 1);
+      }
+      #fx-sheet.open {
+        transform: translateY(0);
+      }
+      .fx-handle {
+        width: 32px;
+        height: 4px;
+        border-radius: 2px;
+        background: var(--border-mid);
+        margin: 0 auto 20px;
+      }
+      .fx-title {
+        font-family: 'Pretendard', sans-serif;
+        font-size: 11px;
+        font-weight: 300;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        padding: 0 24px 8px;
+      }
+      .fx-row {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        padding: 16px 24px;
+        background: transparent;
+        border: none;
+        border-top: 1px solid var(--border-subtle);
+        cursor: pointer;
+        color: var(--text-secondary);
+        font-family: 'Pretendard', sans-serif;
+        font-size: 15px;
+        font-weight: 300;
+        letter-spacing: 0.5px;
+        gap: 16px;
+        -webkit-tap-highlight-color: transparent;
+        transition: color 0.15s;
+      }
+      .fx-row:first-of-type { border-top: none; }
+      .fx-row i { font-size: 20px; }
+      .fx-label { flex: 1; text-align: left; }
+      .fx-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--border-mid);
+        flex-shrink: 0;
+        transition: background 0.15s;
+      }
+      .fx-row.active { color: #111; }
+      .fx-row.active .fx-indicator { background: #111; }
+
+      /* Scrollable sheet on short phones */
+      #fx-sheet {
+        max-height: 80vh;
+        overflow-y: auto;
+      }
+
+      /* Texture section divider inside bottom sheet */
+      .fx-section {
+        padding: 14px 24px 6px;
+        font-family: 'Pretendard', sans-serif;
+        font-size: 9px;
+        font-weight: 300;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      /* Colour swatch in texture rows */
+      .fx-swatch {
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        flex-shrink: 0;
+        border: 1px solid var(--border-mid);
+      }
+
+      /* ↩ default row — hidden until a texture is active */
+      .fx-reset-row { display: none; }
+      .fx-reset-row.visible { display: flex; }
+      .fx-reset-row .fx-label {
+        color: var(--text-muted);
+        font-size: 13px;
+      }
+    }
+
+    /* ── Focus-visible styles ── */
+    .tex-btn:focus-visible,
+    .preset-btn:focus-visible,
+    .mob-btn:focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 2px;
+    }
+
+    /* ── Reduced-motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      .tex-btn, .mob-btn, #texClear, .fx-row, .fx-indicator {
+        transition: none;
+      }
+      #fx-backdrop, #fx-sheet { transition: none; }
+    }
+
+    /* ── Bottom sheet focus-visible ── */
+    .fx-row:focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: -2px;
+    }
+
+    /* ── Dark mode ── */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --surface-bg:      #1a1a1a;
+        --surface-frosted: rgba(28, 28, 28, 0.97);
+        --border-subtle:   rgba(255, 255, 255, 0.07);
+        --border-mid:      rgba(255, 255, 255, 0.15);
+        --border-strong:   rgba(255, 255, 255, 0.20);
+        --text-primary:    rgba(255, 255, 255, 0.95);
+        --text-secondary:  rgba(255, 255, 255, 0.65);
+        --text-muted:      rgba(255, 255, 255, 0.50);
+      }
+      #hud .hud-row > span:not(.key) { color: var(--text-secondary); }
+      #hud .key        { color: rgba(255,255,255,0.80); }
+      #hud .hud-title  { color: var(--text-primary); }
+      #hud .hud-act:hover { background: rgba(255,255,255,0.04); }
+      #hud .hud-act.row-on .key {
+        background: rgba(255,255,255,0.10);
+        border-color: rgba(255,255,255,0.35);
+        color: rgba(255,255,255,0.95);
+      }
+      #hud .hud-act.row-on > span:not(.key) { color: var(--text-primary); }
+      .mode-badge      { color: rgba(255,255,255,0.80); }
+      .mode-badge::before { background: rgba(255,255,255,0.50); }
+      #hud .tex-btn    { color: rgba(255,255,255,0.75); }
+      #hud .tex-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.95); }
+      #texClear        { color: rgba(255,255,255,0.35); }
+      #texClear:hover  { color: rgba(255,255,255,0.75); }
+      #presetReset     { color: rgba(255,255,255,0.35); }
+      #presetReset:hover { color: rgba(255,255,255,0.75); }
+      .preset-btn.active {
+        background: rgba(255,255,255,0.08);
+        border-color: rgba(255,255,255,0.30);
+      }
+      .mob-btn.active  { color: rgba(255,255,255,0.95); }
+      .mob-btn:active  { color: rgba(255,255,255,0.70); }
+      .fx-row.active { color: rgba(255,255,255,0.95); }
+      .fx-row.active .fx-indicator { background: rgba(255,255,255,0.90); }
+      .fx-indicator { background: rgba(255,255,255,0.20); }
+    }
+
+  </style>
+</head>
+<body>
+<!-- SVG grain filter — referenced by body::after via url(#grain) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute">
+  <filter id="grain">
+    <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" stitchTiles="stitch"/>
+    <feColorMatrix type="saturate" values="0"/>
+  </filter>
+</svg>
+<canvas id="canvas"></canvas>
+<canvas id="overlay"></canvas>
+
+<!-- HUD panel -->
+<div id="hud">
+  <div class="hud-title">Fabric</div>
+  <div class="hud-subtitle">interactive cloth simulation</div>
+
+  <div class="hud-group-label">shortcuts</div>
+
+  <div class="hud-row"><span class="key">Drag</span> <span>pull the cloth</span></div>
+  <div class="hud-row hud-act" data-hud-key="T" id="hudRowTear"><span class="key">T</span> <span>enable tear mode</span></div>
+  <div class="hud-row hud-act" data-hud-key="R"><span class="key">R</span>                 <span>reset cloth</span></div>
+  <div class="hud-row hud-act" data-hud-key="W" id="hudRowWind"><span class="key">W</span> <span>enable wind</span></div>
+  <div class="hud-row hud-act" data-hud-key="S"><span class="key">S</span>                 <span>save image</span></div>
+  <div class="hud-row hud-act" data-hud-key="G" id="hudRowGrain"><span class="key">G</span><span>toggle grain</span></div>
+  <div class="hud-row hud-act" data-hud-key="H"><span class="key">H</span>                 <span>hide HUD</span></div>
+
+  <div class="hud-sep"></div>
+
+  <div class="hud-modes">
+    <span id="modeWind"  class="mode-badge">WIND ON</span>
+    <span id="modeTear"  class="mode-badge">TEAR MODE</span>
+    <span id="modeMic"   class="mode-badge">MIC <span class="mic-meter" id="micMeter"></span></span>
+    <span id="modeGrain" class="mode-badge">GRAIN</span>
+  </div>
+
+  <div id="hud-texture">
+    <input type="file" id="texFile" accept="image/*" />
+    <button class="tex-btn" id="texUploadBtn">Upload texture</button>
+    <div id="texClear">✕&nbsp;&nbsp;clear texture</div>
+    <div id="hud-presets">
+      <button class="tex-btn preset-btn" data-preset="SILK"><span class="preset-swatch" style="background:#ccc8c3"></span>SILK</button>
+      <button class="tex-btn preset-btn" data-preset="DENIM"><span class="preset-swatch" style="background:#6b84a0"></span>DENIM</button>
+      <button class="tex-btn preset-btn" data-preset="LINEN"><span class="preset-swatch" style="background:#c8b99a"></span>LINEN</button>
+    </div>
+    <div id="presetReset">↩&nbsp;&nbsp;default</div>
+  </div>
+</div>
+
+
+<!-- Mobile top header (≤768px only) -->
+<header id="mob-header">
+  <span class="mob-title">Fabric</span>
+  <span class="mob-subtitle">Interactive Cloth Simulation</span>
+</header>
+
+<!-- Mobile bottom nav (≤768px only) -->
+<nav id="mob-nav">
+  <button class="mob-btn" id="mobEffects">
+    <i class="ph ph-sliders-horizontal"></i>
+    <span class="mob-label">Effects</span>
+  </button>
+  <button class="mob-btn" id="mobReset">
+    <i class="ph ph-arrow-counter-clockwise"></i>
+    <span class="mob-label">Reset</span>
+  </button>
+  <button class="mob-btn" id="mobSave">
+    <i class="ph ph-download-simple"></i>
+    <span class="mob-label">Save</span>
+  </button>
+  <button class="mob-btn" id="mobUpload">
+    <i class="ph ph-upload-simple"></i>
+    <span class="mob-label">Upload</span>
+  </button>
+  <button class="mob-btn" id="mobMic">
+    <i class="ph ph-microphone"></i>
+    <span class="mob-label">Mic</span>
+  </button>
+</nav>
+
+<!-- Effects bottom sheet (mobile only) -->
+<div id="fx-backdrop" aria-hidden="true"></div>
+<div id="fx-sheet" role="dialog" aria-modal="true" aria-label="Effects">
+  <div class="fx-handle"></div>
+  <div class="fx-title">Effects</div>
+  <button class="fx-row" id="fxTear">
+    <i class="ph ph-scissors"></i>
+    <span class="fx-label">Tear mode</span>
+    <span class="fx-indicator"></span>
+  </button>
+  <button class="fx-row" id="fxWind">
+    <i class="ph ph-wind"></i>
+    <span class="fx-label">Wind</span>
+    <span class="fx-indicator"></span>
+  </button>
+  <button class="fx-row" id="fxGrain">
+    <i class="ph ph-dots-six"></i>
+    <span class="fx-label">Grain</span>
+    <span class="fx-indicator"></span>
+  </button>
+  <div class="fx-section">Texture</div>
+  <button class="fx-row" id="fxSilk" data-fx-preset="SILK">
+    <span class="fx-swatch" style="background:#d8d4d0"></span>
+    <span class="fx-label">Silk</span>
+    <span class="fx-indicator"></span>
+  </button>
+  <button class="fx-row" id="fxDenim" data-fx-preset="DENIM">
+    <span class="fx-swatch" style="background:#4a5f85"></span>
+    <span class="fx-label">Denim</span>
+    <span class="fx-indicator"></span>
+  </button>
+  <button class="fx-row" id="fxLinen" data-fx-preset="LINEN">
+    <span class="fx-swatch" style="background:#ccc8bc"></span>
+    <span class="fx-label">Linen</span>
+    <span class="fx-indicator"></span>
+  </button>
+  <button class="fx-row fx-reset-row" id="fxDefault">
+    <span class="fx-label">↩&nbsp;&nbsp;default texture</span>
+  </button>
+</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   CONFIG
+   ============================================================ */
+function isMobile()  { return window.innerWidth <= 768; }
+const IS_MOBILE     = isMobile();   // boot-time snapshot — used for physics grid only
+const PREFERS_DARK  = window.matchMedia('(prefers-color-scheme: dark)').matches;
+const COLS          = IS_MOBILE ? 20 : 30;
+const ROWS          = IS_MOBILE ? 28 : 30;
+const SPACING       = 18;      // px between adjacent points at rest
+let   gravity       = 0.5;
+const DAMPING       = 0.99;
+let   iterations    = 8;       // constraint relaxation passes / frame
+const TEAR_DIST     = 60;      // auto-tear threshold (× rest length)
+const MOUSE_RADIUS  = 36;
+const WIND_STRENGTH = 1.2;
+const WIND_SPEED    = 0.03;
+
+/* ============================================================
+   Point
+   ============================================================ */
+class Point {
+  constructor(x, y, pinned = false) {
+    this.x = x;  this.y = y;
+    this.prevX = x;  this.prevY = y;
+    this.pinned = pinned;
+    this.initX = x;  this.initY = y;
+  }
+
+  update(ax, ay) {
+    if (this.pinned) return;
+    const vx = (this.x - this.prevX) * DAMPING;
+    const vy = (this.y - this.prevY) * DAMPING;
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.x += vx + ax;
+    this.y += vy + ay;
+  }
+
+  reset() {
+    this.x = this.initX;  this.y = this.initY;
+    this.prevX = this.initX;  this.prevY = this.initY;
+  }
+}
+
+/* ============================================================
+   Constraint
+   ============================================================ */
+class Constraint {
+  constructor(p1, p2) {
+    this.p1 = p1;
+    this.p2 = p2;
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    this.restLength = Math.sqrt(dx * dx + dy * dy);
+    this.active = true;
+  }
+
+  satisfy() {
+    if (!this.active) return;
+    const dx   = this.p2.x - this.p1.x;
+    const dy   = this.p2.y - this.p1.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+    const diff = (dist - this.restLength) / dist;
+
+    if (dist > this.restLength * TEAR_DIST) { this.active = false; return; }
+
+    const ox = dx * diff, oy = dy * diff;
+
+    if (!this.p1.pinned && !this.p2.pinned) {
+      this.p1.x += ox * 0.5;  this.p1.y += oy * 0.5;
+      this.p2.x -= ox * 0.5;  this.p2.y -= oy * 0.5;
+    } else if (!this.p1.pinned) {
+      this.p1.x += ox;  this.p1.y += oy;
+    } else if (!this.p2.pinned) {
+      this.p2.x -= ox;  this.p2.y -= oy;
+    }
+  }
+}
+
+/* ============================================================
+   Cloth
+   ============================================================ */
+class Cloth {
+  constructor(originX, originY) {
+    this.originX = originX;
+    this.originY = originY;
+    this.points      = [];
+    this.constraints = [];
+    /* Constraint lookup maps: used by the quad renderer.
+       hLinks[row][col] = horizontal constraint at (row,col)→(row,col+1)
+       vLinks[row][col] = vertical   constraint at (row,col)→(row+1,col) */
+    this.hLinks = [];
+    this.vLinks = [];
+    this._build();
+  }
+
+  _build() {
+    this.points      = [];
+    this.constraints = [];
+    this.hLinks      = [];
+    this.vLinks      = [];
+
+    /* Points */
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        this.points.push(new Point(
+          this.originX + col * SPACING,
+          this.originY + row * SPACING,
+          row === 0
+        ));
+      }
+    }
+
+    /* Constraints + lookup tables */
+    for (let row = 0; row < ROWS; row++) {
+      this.hLinks.push([]);
+      this.vLinks.push([]);
+      for (let col = 0; col < COLS; col++) {
+        const idx = row * COLS + col;
+
+        if (col < COLS - 1) {
+          const c = new Constraint(this.points[idx], this.points[idx + 1]);
+          this.constraints.push(c);
+          this.hLinks[row].push(c);
+        } else {
+          this.hLinks[row].push(null);
+        }
+
+        if (row < ROWS - 1) {
+          const c = new Constraint(this.points[idx], this.points[idx + COLS]);
+          this.constraints.push(c);
+          this.vLinks[row].push(c);
+        } else {
+          this.vLinks[row].push(null);
+        }
+      }
+    }
+  }
+
+  update(windX) {
+    for (const pt of this.points) pt.update(windX, gravity);
+    for (let i = 0; i < iterations; i++)
+      for (const c of this.constraints) c.satisfy();
+  }
+
+  reset() {
+    for (const pt of this.points)      pt.reset();
+    for (const c  of this.constraints) c.active = true;
+  }
+
+  nearestPoint(mx, my) {
+    let best = null, bestDist = MOUSE_RADIUS;
+    for (const pt of this.points) {
+      const dx = pt.x - mx, dy = pt.y - my;
+      const d  = Math.sqrt(dx * dx + dy * dy);
+      if (d < bestDist) { bestDist = d; best = pt; }
+    }
+    return best;
+  }
+
+  tearNear(mx, my) {
+    const r2 = MOUSE_RADIUS * MOUSE_RADIUS;
+    for (const c of this.constraints) {
+      if (!c.active) continue;
+      const midX = (c.p1.x + c.p2.x) * 0.5;
+      const midY = (c.p1.y + c.p2.y) * 0.5;
+      const dx   = midX - mx, dy = midY - my;
+      if (dx * dx + dy * dy < r2) c.active = false;
+    }
+  }
+}
+
+/* ============================================================
+   Main
+   ============================================================ */
+(function main() {
+  /* ── Canvas setup ── */
+  const canvas  = document.getElementById('canvas');
+  const gl      = canvas.getContext('webgl', { preserveDrawingBuffer: true });
+  const overlay = document.getElementById('overlay');
+  const ctx2d   = overlay.getContext('2d');
+
+  if (!gl) {
+    document.body.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:16px;font-family:'Pretendard',sans-serif;background:#f5f5f5"><div style="font-size:28px;font-weight:200;letter-spacing:8px;color:#111;text-transform:uppercase">Fabric</div><div style="font-size:12px;letter-spacing:3px;color:#767676;text-transform:lowercase">WebGL not supported in this browser</div><div style="font-size:11px;letter-spacing:1px;color:#aaa">Try Chrome, Firefox, or Safari 15+</div></div>`;
+    return;
+  }
+
+  const elWind      = document.getElementById('modeWind');
+  const elTear      = document.getElementById('modeTear');
+  const elMic       = document.getElementById('modeMic');
+  const elMicMeter  = document.getElementById('micMeter');
+  const elGrain     = document.getElementById('modeGrain');
+  const hud         = document.getElementById('hud');
+  const texFile     = document.getElementById('texFile');
+  const texUploadBtn= document.getElementById('texUploadBtn');
+  const texClear    = document.getElementById('texClear');
+
+  /* ── Mobile nav button refs ── */
+  const mobHeader  = document.getElementById('mob-header');
+  const mobNav     = document.getElementById('mob-nav');
+  const mobEffects = document.getElementById('mobEffects');
+  const mobReset   = document.getElementById('mobReset');
+  const mobSave    = document.getElementById('mobSave');
+  const mobMic     = document.getElementById('mobMic');
+  const mobUpload  = document.getElementById('mobUpload');
+
+  /* ── Effects bottom sheet refs ── */
+  const fxBackdrop = document.getElementById('fx-backdrop');
+  const fxSheet    = document.getElementById('fx-sheet');
+  const fxTear     = document.getElementById('fxTear');
+  const fxWind     = document.getElementById('fxWind');
+  const fxGrain    = document.getElementById('fxGrain');
+  const fxSilk     = document.getElementById('fxSilk');
+  const fxDenim    = document.getElementById('fxDenim');
+  const fxLinen    = document.getElementById('fxLinen');
+  const fxDefault  = document.getElementById('fxDefault');
+
+  /* ── Language localisation — Korean if system lang starts with 'ko' ── */
+  if (navigator.language && navigator.language.toLowerCase().startsWith('ko')) {
+    /* Mark document language for screen readers */
+    document.documentElement.lang = 'ko';
+
+    /* Switch entire page to Noto Sans KR */
+    document.body.style.fontFamily = "'Noto Sans KR', sans-serif";
+
+    /* HUD — subtitle */
+    document.querySelector('.hud-subtitle').textContent = '인터랙티브 천 시뮬레이션';
+
+    /* Mobile header */
+    mobHeader.querySelector('.mob-subtitle').textContent = '인터랙티브 천 시뮬레이션';
+
+    /* HUD — control label spans (non-.key children of .hud-row, in DOM order) */
+    const labelTexts = ['천을 당기세요', '찢기 모드 켜기', '천 초기화', '바람 켜기', '이미지 저장', '입자 토글', 'HUD 숨기기'];
+    document.querySelectorAll('.hud-row span:not(.key)').forEach((el, i) => {
+      el.textContent = labelTexts[i];
+    });
+
+    /* HUD — mode badges */
+    document.getElementById('modeWind').textContent  = '바람 켜짐';
+    document.getElementById('modeTear').textContent  = '찢기 모드';
+    document.getElementById('modeGrain').textContent = '입자';
+    /* modeMic has a child .mic-meter span — only update the leading text node */
+    elMic.firstChild.textContent = '🎤 마이크 ';
+
+    /* HUD — texture controls */
+    document.getElementById('texUploadBtn').textContent = '텍스처 업로드';
+    document.getElementById('texClear').innerHTML       = '✕&nbsp;&nbsp;텍스처 지우기';
+    document.getElementById('presetReset').innerHTML    = '↩&nbsp;&nbsp;기본값';
+
+    /* Mobile nav labels */
+    if (isMobile()) {
+      mobEffects.querySelector('.mob-label').textContent = '효과';
+      mobReset  .querySelector('.mob-label').textContent = '초기화';
+      mobSave   .querySelector('.mob-label').textContent = '저장';
+      mobMic    .querySelector('.mob-label').textContent = '마이크';
+      mobUpload .querySelector('.mob-label').textContent = '업로드';
+      /* Bottom sheet rows */
+      document.querySelector('.fx-title').textContent        = '효과';
+      fxTear.querySelector('.fx-label').textContent          = '찢기 모드';
+      fxWind.querySelector('.fx-label').textContent          = '바람';
+      fxGrain.querySelector('.fx-label').textContent         = '입자';
+      document.querySelector('.fx-section').textContent      = '질감';
+      fxSilk.querySelector('.fx-label').textContent          = '실크';
+      fxDenim.querySelector('.fx-label').textContent         = '데님';
+      fxLinen.querySelector('.fx-label').textContent         = '리넨';
+      fxDefault.querySelector('.fx-label').innerHTML         = '↩&nbsp;&nbsp;기본 질감';
+    }
+  }
+
+  /* ── WebGL — shaders ── */
+  const VS_SRC = `
+    attribute vec2 aPosition;
+    attribute vec2 aUV;
+    uniform vec2 uResolution;
+    varying vec2 vUV;
+    void main() {
+      vec2 ndc = (aPosition / uResolution) * 2.0 - 1.0;
+      gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+      vUV = aUV;
+    }
+  `;
+
+  const FS_SRC = `
+    precision mediump float;
+    varying vec2 vUV;
+    uniform int uHasTexture;
+    uniform int uIsLine;
+    uniform sampler2D uTexture;
+    uniform vec3  uClothColor;
+    uniform float uLineAlpha;
+    void main() {
+      if (uIsLine == 1) {
+        gl_FragColor = vec4(0.60, 0.60, 0.62, uLineAlpha);
+      } else if (uHasTexture == 1) {
+        gl_FragColor = texture2D(uTexture, vUV);
+      } else {
+        gl_FragColor = vec4(uClothColor, 1.0);
+      }
+    }
+  `;
+
+  function compileShader(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.error('Shader compile error:', gl.getShaderInfoLog(sh));
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  }
+
+  const vs   = compileShader(gl.VERTEX_SHADER,   VS_SRC);
+  const fs   = compileShader(gl.FRAGMENT_SHADER, FS_SRC);
+  if (!vs || !fs) return;    // shader compile failed — already logged
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(prog));
+    return;
+  }
+  gl.useProgram(prog);
+
+  /* ── Attribute / uniform locations ── */
+  const aPositionLoc   = gl.getAttribLocation(prog,  'aPosition');
+  const aUVLoc         = gl.getAttribLocation(prog,  'aUV');
+  const uResolutionLoc  = gl.getUniformLocation(prog, 'uResolution');
+  const uHasTextureLoc  = gl.getUniformLocation(prog, 'uHasTexture');
+  const uIsLineLoc      = gl.getUniformLocation(prog, 'uIsLine');
+  const uTextureLoc     = gl.getUniformLocation(prog, 'uTexture');
+  const uClothColorLoc  = gl.getUniformLocation(prog, 'uClothColor');
+  const uLineAlphaLoc   = gl.getUniformLocation(prog, 'uLineAlpha');
+
+  /* ── Preset state ── */
+  const PRESETS = {
+    SILK: {
+      iterations: 5,  gravity: 0.3,
+      color:     [0.85, 0.82, 0.80], lineAlpha:     0.25,
+      colorDark: [0.45, 0.42, 0.40], lineAlphaDark: 0.18,
+    },
+    DENIM: {
+      iterations: 15, gravity: 0.6,
+      color:     [0.25, 0.35, 0.52], lineAlpha:     0.60,
+      colorDark: [0.14, 0.20, 0.38], lineAlphaDark: 0.52,
+    },
+    LINEN: {
+      iterations: 10, gravity: 0.5,
+      color:     [0.80, 0.78, 0.72], lineAlpha:     0.45,
+      colorDark: [0.28, 0.26, 0.22], lineAlphaDark: 0.36,
+    },
+  };
+  const DEFAULT_COLOR      = PREFERS_DARK ? [0.18, 0.18, 0.20] : [0.76, 0.76, 0.78];
+  const DEFAULT_LINE_ALPHA = PREFERS_DARK ? 0.40 : 0.50;
+  const DEFAULT_GRAVITY    = gravity;
+  const DEFAULT_ITERATIONS = iterations;
+  let clothColor   = DEFAULT_COLOR.slice();
+  let lineAlpha    = DEFAULT_LINE_ALPHA;
+  let activePreset = null;
+
+  /* Set initial uniform values immediately after program is linked */
+  gl.uniform3f(uClothColorLoc, ...clothColor);
+  gl.uniform1f(uLineAlphaLoc,   lineAlpha);
+
+  /* ── Buffers ── */
+  const posBuffer     = gl.createBuffer();   // dynamic — updated every frame
+  const uvBuffer      = gl.createBuffer();   // static  — uploaded once per cloth
+  const idxBuffer     = gl.createBuffer();   // dynamic — rebuilt per frame for tear
+  const lineIdxBuffer = gl.createBuffer();   // dynamic — line indices for grid pass
+
+  /* Build and upload the UV buffer (normalized 0→1, static per cloth instance).
+     UNPACK_FLIP_Y_WEBGL is set on texture upload so that UV (0,0) = top-left. */
+  function buildUVBuffer() {
+    const uvs = new Float32Array(ROWS * COLS * 2);
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        const i = (row * COLS + col) * 2;
+        uvs[i]     = col / (COLS - 1);   // u: 0→1 left→right
+        uvs[i + 1] = row / (ROWS - 1);   // v: 0→1 top→bottom
+      }
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+  }
+
+  /* Upload current cloth point positions (called every frame). */
+  function uploadPositions(cloth) {
+    const pos = new Float32Array(cloth.points.length * 2);
+    for (let i = 0; i < cloth.points.length; i++) {
+      pos[i * 2]     = cloth.points[i].x;
+      pos[i * 2 + 1] = cloth.points[i].y;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, pos, gl.DYNAMIC_DRAW);
+  }
+
+  /* Build index list for active quads only (skips torn constraints).
+     Returns the number of indices uploaded. */
+  function buildAndUploadIndices(cloth) {
+    const idx = [];
+    for (let row = 0; row < ROWS - 1; row++) {
+      for (let col = 0; col < COLS - 1; col++) {
+        const top    = cloth.hLinks[row][col];
+        const bottom = cloth.hLinks[row + 1][col];
+        const left   = cloth.vLinks[row][col];
+        const right  = cloth.vLinks[row][col + 1];
+        if (!top || !bottom || !left || !right) continue;
+        if (!top.active || !bottom.active || !left.active || !right.active) continue;
+        const tl = row * COLS + col;
+        const tr = row * COLS + col + 1;
+        const br = (row + 1) * COLS + col + 1;
+        const bl = (row + 1) * COLS + col;
+        idx.push(tl, tr, bl);   // triangle 1
+        idx.push(tr, br, bl);   // triangle 2
+      }
+    }
+    const arr = new Uint16Array(idx);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+    return arr.length;
+  }
+
+  /* Build line index pairs from all active constraints (for gl.LINES grid pass).
+     Returns the number of indices uploaded. */
+  function buildAndUploadLineIndices(cloth) {
+    const idx = [];
+    for (let row = 0; row < ROWS; row++) {
+      for (let col = 0; col < COLS; col++) {
+        if (col < COLS - 1) {
+          const c = cloth.hLinks[row][col];
+          if (c && c.active) idx.push(row * COLS + col, row * COLS + col + 1);
+        }
+        if (row < ROWS - 1) {
+          const c = cloth.vLinks[row][col];
+          if (c && c.active) idx.push(row * COLS + col, (row + 1) * COLS + col);
+        }
+      }
+    }
+    const arr = new Uint16Array(idx);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, lineIdxBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+    return arr.length;
+  }
+
+  /* ── Texture state ── */
+  let glTexture  = null;
+  let hasTexture = false;
+  let texObjURL  = null;
+
+  function loadGLTexture(img) {
+    if (!glTexture) glTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, glTexture);
+    /* Flip image so UV (0,0) = top-left matches our row=0 origin */
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    hasTexture = true;
+  }
+
+  texUploadBtn.addEventListener('click', () => texFile.click());
+
+  texFile.addEventListener('change', () => {
+    const file = texFile.files[0];
+    if (!file) return;
+    if (texObjURL) { URL.revokeObjectURL(texObjURL); texObjURL = null; }
+    const url = URL.createObjectURL(file);
+    texObjURL = url;
+    const img = new Image();
+    img.onload = () => {
+      loadGLTexture(img);
+      cloth    = makeCloth();
+      buildUVBuffer();
+      tearMode = false;
+      updateHUD();
+      texClear.classList.add('visible');
+    };
+    img.src = url;
+  });
+
+  texClear.addEventListener('click', () => {
+    hasTexture = false;
+    if (glTexture) { gl.deleteTexture(glTexture); glTexture = null; }
+    texFile.value = '';
+    texClear.classList.remove('visible');
+    if (texObjURL) { URL.revokeObjectURL(texObjURL); texObjURL = null; }
+    cloth    = makeCloth();
+    buildUVBuffer();
+    tearMode = false;
+    updateHUD();
+  });
+
+  /* ── Resize ── */
+  function resize() {
+    let cw, ch;
+    if (isMobile()) {
+      const headerH = mobHeader.offsetHeight;
+      const navH    = mobNav.offsetHeight;
+      cw = window.innerWidth;
+      ch = window.innerHeight - headerH - navH;
+      canvas.style.cssText  = `position:fixed;top:${headerH}px;left:0;width:${cw}px;height:${ch}px;z-index:1`;
+      overlay.style.cssText = `position:fixed;top:${headerH}px;left:0;width:${cw}px;height:${ch}px;z-index:2;pointer-events:none`;
+      document.body.style.overflow = 'hidden';
+    } else {
+      cw = window.innerWidth;
+      ch = window.innerHeight;
+      canvas.style.cssText  = '';
+      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;display:block';
+      document.body.style.overflow = '';
+    }
+    canvas.width   = cw;
+    canvas.height  = ch;
+    overlay.width  = cw;
+    overlay.height = ch;
+    gl.viewport(0, 0, cw, ch);
+    gl.useProgram(prog);
+    gl.uniform2f(uResolutionLoc, cw, ch);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ── Cloth init ── */
+  function makeCloth() {
+    const clothWidth = (COLS - 1) * SPACING;
+    const originX    = Math.round((canvas.width  - clothWidth) / 2);
+    const originY    = Math.round(canvas.height  * 0.08);
+    return new Cloth(originX, originY);
+  }
+
+  let cloth = makeCloth();
+  buildUVBuffer();
+
+  /* ── Microphone audio analysis ── */
+  let micAnalyser = null;
+  let micData     = null;
+
+  navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    .then(stream => {
+      const audioCtx  = new AudioContext();
+      const source    = audioCtx.createMediaStreamSource(stream);
+      micAnalyser     = audioCtx.createAnalyser();
+      micAnalyser.fftSize = 256;
+      micData         = new Uint8Array(micAnalyser.frequencyBinCount);
+      source.connect(micAnalyser);
+      updateHUD();
+    })
+    .catch(() => { /* permission denied — mic stays null */ });
+
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let windEnabled  = false; // stays off by default — satisfies prefers-reduced-motion
+  let tearMode     = false;
+  let windPhase    = 0;
+  let mouse        = { x: 0, y: 0, down: false };
+  let draggedPoint = null;
+  let grainOn      = false;
+  let hudHidden    = false;
+  let hudPeekTimer = null;
+  let glowPos      = null;
+  let glowAt       = 0;
+
+  /* Convert a viewport-relative clientX/Y into canvas-local coordinates.
+     On desktop the canvas is at 0,0 so this is a no-op; on mobile the canvas
+     is offset so we must subtract its bounding rect position. */
+  function canvasPos(clientX, clientY) {
+    const r = canvas.getBoundingClientRect();
+    return { x: clientX - r.left, y: clientY - r.top };
+  }
+
+  /* ── Mouse ── */
+  canvas.addEventListener('mousedown', e => {
+    mouse.down = true;
+    const pos  = canvasPos(e.clientX, e.clientY);
+    mouse.x = pos.x;
+    mouse.y = pos.y;
+    if (!tearMode) draggedPoint = cloth.nearestPoint(mouse.x, mouse.y);
+  });
+
+  canvas.addEventListener('mousemove', e => {
+    const pos = canvasPos(e.clientX, e.clientY);
+    mouse.x = pos.x;
+    mouse.y = pos.y;
+    if (tearMode) cloth.tearNear(mouse.x, mouse.y);
+    if (mouse.down && draggedPoint && !tearMode) {
+      draggedPoint.x     = mouse.x;
+      draggedPoint.y     = mouse.y;
+      draggedPoint.prevX = mouse.x;
+      draggedPoint.prevY = mouse.y;
+    }
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    if (draggedPoint) { glowPos = { x: draggedPoint.x, y: draggedPoint.y }; glowAt = performance.now(); }
+    mouse.down = false; draggedPoint = null;
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (draggedPoint) { glowPos = { x: draggedPoint.x, y: draggedPoint.y }; glowAt = performance.now(); }
+    mouse.down = false; draggedPoint = null;
+  });
+
+  /* ── Touch ── */
+  function touchPos(e) {
+    return e.touches.length
+      ? { clientX: e.touches[0].clientX, clientY: e.touches[0].clientY }
+      : { clientX: mouse.x, clientY: mouse.y };
+  }
+  canvas.addEventListener('touchstart', e => { e.preventDefault(); canvas.dispatchEvent(new MouseEvent('mousedown', touchPos(e))); }, { passive: false });
+  canvas.addEventListener('touchmove',  e => { e.preventDefault(); canvas.dispatchEvent(new MouseEvent('mousemove', touchPos(e))); }, { passive: false });
+  canvas.addEventListener('touchend',   e => { e.preventDefault(); canvas.dispatchEvent(new MouseEvent('mouseup')); },               { passive: false });
+
+  /* ── Keyboard ── */
+  window.addEventListener('keydown', e => {
+    switch (e.key.toUpperCase()) {
+      case 'T':
+        tearMode = !tearMode;
+        if (tearMode) cloth.tearNear(mouse.x, mouse.y);
+        updateHUD();
+        break;
+      case 'R':
+        cloth        = makeCloth();
+        buildUVBuffer();
+        windEnabled  = false;
+        tearMode     = false;
+        updateHUD();
+        break;
+      case 'W':
+        windEnabled = !windEnabled;
+        updateHUD();
+        break;
+      case 'S': saveImage(); break;
+      case 'G':
+        grainOn = !grainOn;
+        document.body.classList.toggle('grain-on', grainOn);
+        updateHUD();
+        break;
+      case 'H':
+        if (!isMobile()) {
+          hudHidden = !hudHidden;
+          hud.classList.toggle('hud-hidden', hudHidden);
+        }
+        break;
+    }
+  });
+
+  /* ── HUD proximity reveal — hover near left edge while hidden ── */
+  if (!isMobile()) {
+    window.addEventListener('mousemove', e => {
+      if (hudHidden && e.clientX < 80) {
+        hud.classList.remove('hud-hidden');
+        clearTimeout(hudPeekTimer);
+        hudPeekTimer = setTimeout(() => {
+          if (hudHidden) hud.classList.add('hud-hidden');
+        }, 2000);
+      }
+    });
+  }
+
+  /* ── Save image — shared by keyboard shortcut + mobile button ── */
+  function saveImage() {
+    const off    = document.createElement('canvas');
+    off.width    = canvas.width;
+    off.height   = canvas.height;
+    const offCtx = off.getContext('2d');
+    offCtx.drawImage(canvas,  0, 0);
+    offCtx.drawImage(overlay, 0, 0);
+    const dataURL = off.toDataURL('image/png');
+    const link    = document.createElement('a');
+    link.href     = dataURL;
+    link.download = `fabric-${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  /* ── HUD badges + mobile button active states ── */
+  function updateHUD() {
+    elWind .classList.toggle('visible', windEnabled);
+    elTear .classList.toggle('visible', tearMode);
+    elMic  .classList.toggle('visible', windEnabled && micAnalyser !== null);
+    elGrain.classList.toggle('visible', grainOn);
+    if (isMobile()) {
+      /* Nav button — "active" when any effect is on */
+      mobEffects.classList.toggle('active', tearMode || windEnabled || grainOn);
+      mobMic    .classList.toggle('active', micAnalyser !== null);
+      /* Bottom sheet rows */
+      fxTear .classList.toggle('active', tearMode);
+      fxWind .classList.toggle('active', windEnabled);
+      fxGrain.classList.toggle('active', grainOn);
+    } else {
+      /* Desktop HUD shortcut rows — inline active state */
+      document.getElementById('hudRowTear') .classList.toggle('row-on', tearMode);
+      document.getElementById('hudRowWind') .classList.toggle('row-on', windEnabled);
+      document.getElementById('hudRowGrain').classList.toggle('row-on', grainOn);
+    }
+  }
+
+  /* ── Mobile button handlers ── */
+  if (isMobile()) {
+    /* Bottom sheet open / close */
+    function openFxSheet() {
+      fxSheet  .classList.add('open');
+      fxBackdrop.classList.add('open');
+      fxBackdrop.removeAttribute('aria-hidden');
+      fxSheet.setAttribute('aria-hidden', 'false');
+    }
+    function closeFxSheet() {
+      fxSheet  .classList.remove('open');
+      fxBackdrop.classList.remove('open');
+      fxBackdrop.setAttribute('aria-hidden', 'true');
+      fxSheet.setAttribute('aria-hidden', 'true');
+    }
+
+    mobEffects.addEventListener('click', openFxSheet);
+    fxBackdrop.addEventListener('click', closeFxSheet);
+
+    /* Bottom sheet effect toggles */
+    fxTear .addEventListener('click', () => { tearMode   = !tearMode;    updateHUD(); });
+    fxWind .addEventListener('click', () => { windEnabled = !windEnabled; updateHUD(); });
+    fxGrain.addEventListener('click', () => {
+      grainOn = !grainOn;
+      document.body.classList.toggle('grain-on', grainOn);
+      updateHUD();
+    });
+
+    /* Nav actions */
+    mobReset.addEventListener('click', () => {
+      cloth       = makeCloth();
+      buildUVBuffer();
+      windEnabled = false;
+      tearMode    = false;
+      updateHUD();
+    });
+    mobSave  .addEventListener('click', saveImage);
+    mobUpload.addEventListener('click', () => texFile.click());
+    mobMic   .addEventListener('click', () => {
+      if (micAnalyser) return; // already connected
+      navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        .then(stream => {
+          const audioCtx  = new AudioContext();
+          const source    = audioCtx.createMediaStreamSource(stream);
+          micAnalyser     = audioCtx.createAnalyser();
+          micAnalyser.fftSize = 256;
+          micData         = new Uint8Array(micAnalyser.frequencyBinCount);
+          source.connect(micAnalyser);
+          if (!windEnabled) { windEnabled = true; }
+          updateHUD();
+        })
+        .catch(() => { /* permission denied */ });
+    });
+  }
+
+  /* ── Desktop HUD — clickable shortcut rows ── */
+  if (!isMobile()) {
+    document.querySelectorAll('#hud .hud-act').forEach(row => {
+      row.addEventListener('click', () => {
+        const key = row.dataset.hudKey;
+        if (key) window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      });
+    });
+  }
+
+  /* ── Fabric preset buttons ── */
+  const presetBtns  = document.querySelectorAll('.preset-btn');
+  const presetReset = document.getElementById('presetReset');
+
+  /* Sync all preset UI (desktop buttons + mobile sheet rows) for a given key (null = default) */
+  function syncPresetUI(key) {
+    presetBtns.forEach(b => b.classList.toggle('active', b.dataset.preset === key));
+    presetReset.classList.toggle('visible', key !== null);
+    /* Mobile bottom sheet texture rows */
+    fxSilk   .classList.toggle('active', key === 'SILK');
+    fxDenim  .classList.toggle('active', key === 'DENIM');
+    fxLinen  .classList.toggle('active', key === 'LINEN');
+    fxDefault.classList.toggle('visible', key !== null);
+  }
+
+  /* Apply a named preset (shared by desktop and mobile) */
+  function applyPreset(key) {
+    const preset = PRESETS[key];
+    if (!preset) return;
+    gravity    = preset.gravity;
+    iterations = preset.iterations;
+    clothColor = (PREFERS_DARK && preset.colorDark)
+      ? preset.colorDark.slice()
+      : preset.color.slice();
+    lineAlpha  = (PREFERS_DARK && preset.lineAlphaDark != null)
+      ? preset.lineAlphaDark
+      : preset.lineAlpha;
+    cloth.reset();
+    activePreset = key;
+    syncPresetUI(key);
+  }
+
+  function applyDefaultCloth() {
+    gravity    = DEFAULT_GRAVITY;
+    iterations = DEFAULT_ITERATIONS;
+    clothColor = DEFAULT_COLOR.slice();
+    lineAlpha  = DEFAULT_LINE_ALPHA;
+    cloth.reset();
+    activePreset = null;
+    syncPresetUI(null);
+  }
+
+  presetBtns.forEach(btn => {
+    btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+  });
+
+  presetReset.addEventListener('click', applyDefaultCloth);
+
+  /* Mobile bottom sheet texture handlers */
+  [fxSilk, fxDenim, fxLinen].forEach(btn => {
+    btn.addEventListener('click', () => applyPreset(btn.dataset.fxPreset));
+  });
+  fxDefault.addEventListener('click', applyDefaultCloth);
+
+  /* ── WebGL GL state setup ── */
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  /* ── Main loop ── */
+  function loop() {
+    requestAnimationFrame(loop);
+
+    /* Wind */
+    let windX = 0;
+    if (windEnabled) {
+      if (micAnalyser) {
+        micAnalyser.getByteFrequencyData(micData);
+        let sum = 0;
+        for (let i = 0; i < micData.length; i++) sum += micData[i];
+        const avg = sum / micData.length;
+        windX = (avg / 255) * 3;
+        elMicMeter.style.width = Math.round((avg / 255) * 40) + 'px';
+      } else {
+        windPhase += WIND_SPEED;
+        windX = Math.sin(windPhase) * WIND_STRENGTH;
+      }
+    }
+
+    /* Physics */
+    cloth.update(windX);
+
+    /* ── WebGL render ── */
+    if (isMobile()) {
+      gl.clearColor(0, 0, 0, 0);                              // transparent — body bg shows through
+    } else if (PREFERS_DARK) {
+      gl.clearColor(26 / 255, 26 / 255, 26 / 255, 1.0);      // #1a1a1a — matches dark-mode --surface-bg
+    } else {
+      gl.clearColor(240 / 255, 240 / 255, 240 / 255, 1.0);   // #f0f0f0 — light mode
+    }
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.useProgram(prog);
+    gl.uniform2f(uResolutionLoc, canvas.width, canvas.height);
+    gl.uniform1i(uHasTextureLoc, hasTexture ? 1 : 0);
+    gl.uniform3f(uClothColorLoc, ...clothColor);
+    gl.uniform1f(uLineAlphaLoc,   lineAlpha);
+
+    if (hasTexture && glTexture) {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, glTexture);
+      gl.uniform1i(uTextureLoc, 0);
+    }
+
+    /* Upload positions */
+    uploadPositions(cloth);
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.enableVertexAttribArray(aPositionLoc);
+    gl.vertexAttribPointer(aPositionLoc, 2, gl.FLOAT, false, 0, 0);
+
+    /* Bind UV buffer */
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+    gl.enableVertexAttribArray(aUVLoc);
+    gl.vertexAttribPointer(aUVLoc, 2, gl.FLOAT, false, 0, 0);
+
+    /* Build index buffer (skips torn quads) and draw filled quads */
+    gl.uniform1i(uIsLineLoc, 0);
+    const indexCount = buildAndUploadIndices(cloth);
+    if (indexCount > 0) {
+      gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+    }
+
+    /* Grid lines — second pass, no-texture mode only */
+    if (!hasTexture) {
+      gl.uniform1i(uIsLineLoc, 1);
+      const lineCount = buildAndUploadLineIndices(cloth);
+      if (lineCount > 0) {
+        gl.drawElements(gl.LINES, lineCount, gl.UNSIGNED_SHORT, 0);
+      }
+      gl.uniform1i(uIsLineLoc, 0);
+    }
+
+    /* ── Overlay: 2D decorations ── */
+    ctx2d.clearRect(0, 0, overlay.width, overlay.height);
+
+    /* Cursor glow — skip entirely when user prefers reduced motion */
+    if (!prefersReducedMotion) {
+      /* Active drag radial gradient */
+      if (mouse.down && draggedPoint) {
+        const grdA = ctx2d.createRadialGradient(
+          draggedPoint.x, draggedPoint.y, 0,
+          draggedPoint.x, draggedPoint.y, 52
+        );
+        grdA.addColorStop(0, 'rgba(255,255,255,0.28)');
+        grdA.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx2d.save();
+        ctx2d.fillStyle = grdA;
+        ctx2d.beginPath();
+        ctx2d.arc(draggedPoint.x, draggedPoint.y, 52, 0, Math.PI * 2);
+        ctx2d.fill();
+        ctx2d.restore();
+      }
+
+      /* Fade-out afterglow (400 ms) */
+      if (glowPos && glowAt) {
+        const elapsed = performance.now() - glowAt;
+        if (elapsed < 400) {
+          const alpha = 0.28 * (1 - elapsed / 400);
+          const grdB = ctx2d.createRadialGradient(
+            glowPos.x, glowPos.y, 0,
+            glowPos.x, glowPos.y, 52
+          );
+          grdB.addColorStop(0, `rgba(255,255,255,${alpha.toFixed(3)})`);
+          grdB.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx2d.save();
+          ctx2d.fillStyle = grdB;
+          ctx2d.beginPath();
+          ctx2d.arc(glowPos.x, glowPos.y, 52, 0, Math.PI * 2);
+          ctx2d.fill();
+          ctx2d.restore();
+        }
+      }
+    }
+
+    /* Drag highlight dot */
+    if (mouse.down && draggedPoint) {
+      ctx2d.save();
+      ctx2d.beginPath();
+      ctx2d.arc(draggedPoint.x, draggedPoint.y, 5, 0, Math.PI * 2);
+      ctx2d.fillStyle   = 'white';
+      ctx2d.shadowColor = 'white';
+      ctx2d.shadowBlur  = 15;
+      ctx2d.fill();
+      ctx2d.restore();
+    }
+
+    /* Tear cursor ring */
+    if (tearMode) {
+      ctx2d.save();
+      ctx2d.beginPath();
+      ctx2d.arc(mouse.x, mouse.y, MOUSE_RADIUS, 0, Math.PI * 2);
+      ctx2d.strokeStyle = 'rgba(255, 80, 60, 0.50)';
+      ctx2d.lineWidth   = 1.5;
+      ctx2d.shadowColor = 'rgba(255, 60, 40, 0.40)';
+      ctx2d.shadowBlur  = 8;
+      ctx2d.stroke();
+      ctx2d.restore();
+    }
+  }
+
+  loop();
+})();
+</script>
+</body>
+</html>
