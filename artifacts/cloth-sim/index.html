@@ -33,14 +33,20 @@
     }
     #canvas {
       display: block;
-      width: 100%; height: 100%;
+      position: fixed;
+      left: 280px;
+      top: 0;
+      width: calc(100vw - 280px);
+      height: 100vh;
     }
 
     /* ── Overlay canvas — 2D decorations (pinned dots, drag, tear cursor) ── */
     #overlay {
       position: fixed;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
+      top: 0;
+      left: 280px;
+      width: calc(100vw - 280px);
+      height: 100%;
       pointer-events: none;
       display: block;
     }
@@ -65,18 +71,22 @@
       body::after { transition: none; }
     }
 
-    /* ── HUD panel — no box, just a left accent line ── */
+    /* ── HUD panel — full-height left panel ── */
     #hud {
       position: fixed;
-      top: 24px;
-      left: 20px;
-      padding: 20px 28px 22px 22px;
-      border-left: 1px solid var(--border-mid);
+      top: 0;
+      left: 0;
+      width: 280px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 32px 28px;
+      box-sizing: border-box;
+      border-right: 1px solid var(--border-subtle);
       font-family: 'Pretendard', sans-serif;
       color: #888888;
       pointer-events: none;
       user-select: none;
-      min-width: 196px;
       transition: opacity 0.4s ease;
     }
     .hud-hidden {
@@ -95,7 +105,7 @@
       letter-spacing: 8px;
       color: var(--text-primary);
       text-transform: uppercase;
-      margin-bottom: 6px;
+      margin-bottom: 4px;
     }
 
     /* Subtitle */
@@ -105,18 +115,21 @@
       letter-spacing: 3.5px;
       color: var(--text-muted);
       text-transform: lowercase;
-      margin-bottom: 18px;
+      margin-bottom: 32px;
     }
 
-    /* Section group label */
+    /* Section group label — hidden in redesigned panel */
     #hud .hud-group-label {
-      font-size: 7.5px;
-      font-weight: 500;
-      letter-spacing: 2.5px;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      margin-bottom: 10px;
-      opacity: 0.6;
+      display: none;
+    }
+
+    /* Middle controls container — fills available space */
+    #hud .hud-controls {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow: hidden;
     }
 
     /* Each control row */
@@ -125,12 +138,11 @@
       align-items: center;
       gap: 9px;
       line-height: 1;
-      margin: 0 -7px 2px;
+      margin: 0 -7px;
       padding: 5px 7px;
       border-radius: 6px;
       transition: background 0.12s;
     }
-    #hud .hud-row:last-of-type { margin-bottom: 0; }
 
     /* Interactive rows — clickable on desktop */
     #hud .hud-act {
@@ -178,11 +190,9 @@
       color: var(--text-primary);
     }
 
-    /* Separator */
+    /* Separator — hidden; separation is handled by border-top on #hud-texture */
     #hud .hud-sep {
-      height: 1px;
-      background: var(--border-subtle);
-      margin: 10px 0;
+      display: none;
     }
 
     /* Mode badge row */
@@ -228,11 +238,11 @@
       margin-right: 2px;
     }
 
-    /* ── Bottom canvas label ── */
+    /* ── Bottom canvas label — centered in the canvas area (right of panel) ── */
     #canvas-label {
       position: fixed;
       bottom: 28px;
-      left: 50%;
+      left: calc(280px + (100vw - 280px) / 2);
       transform: translateX(-50%);
       font-family: 'Pretendard', sans-serif;
       font-size: 9px;
@@ -250,9 +260,11 @@
     #mob-header { display: none; }
     #mob-nav    { display: none; }
 
-    /* ── Texture upload section ── */
+    /* ── Bottom tools section — pinned to bottom ── */
     #hud-texture {
-      margin-top: 16px;
+      margin-top: auto;
+      padding-top: 20px;
+      border-top: 1px solid rgba(0, 0, 0, 0.06);
     }
     #texFile { display: none; }
     #hud .tex-btn {
@@ -330,6 +342,9 @@
     /* ── Mobile layout ≤768px ── */
     @media (max-width: 768px) {
       #hud, #canvas-label { display: none !important; }
+      /* Restore full-width canvas on mobile — no panel offset */
+      #canvas  { left: 0; width: 100vw; }
+      #overlay { left: 0; width: 100%; }
 
       #mob-header {
         display: flex;
@@ -559,6 +574,7 @@
       .mode-badge::before { background: rgba(255,255,255,0.50); }
       #hud .tex-btn    { color: rgba(255,255,255,0.75); }
       #hud .tex-btn:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.95); }
+      #hud-texture     { border-top-color: rgba(255, 255, 255, 0.08); }
       #texClear        { color: rgba(255,255,255,0.35); }
       #texClear:hover  { color: rgba(255,255,255,0.75); }
       #presetReset     { color: rgba(255,255,255,0.35); }
@@ -592,23 +608,21 @@
   <div class="hud-title">Fabric</div>
   <div class="hud-subtitle">interactive cloth simulation</div>
 
-  <div class="hud-group-label">shortcuts</div>
+  <div class="hud-controls">
+    <div class="hud-row"><span class="key">Drag</span> <span>pull the cloth</span></div>
+    <div class="hud-row hud-act" data-hud-key="T" id="hudRowTear"><span class="key">T</span> <span>enable tear mode</span></div>
+    <div class="hud-row hud-act" data-hud-key="R"><span class="key">R</span>                 <span>reset cloth</span></div>
+    <div class="hud-row hud-act" data-hud-key="W" id="hudRowWind"><span class="key">W</span> <span>enable wind</span></div>
+    <div class="hud-row hud-act" data-hud-key="S"><span class="key">S</span>                 <span>save image</span></div>
+    <div class="hud-row hud-act" data-hud-key="G" id="hudRowGrain"><span class="key">G</span><span>toggle grain</span></div>
+    <div class="hud-row hud-act" data-hud-key="H"><span class="key">H</span>                 <span>hide HUD</span></div>
 
-  <div class="hud-row"><span class="key">Drag</span> <span>pull the cloth</span></div>
-  <div class="hud-row hud-act" data-hud-key="T" id="hudRowTear"><span class="key">T</span> <span>enable tear mode</span></div>
-  <div class="hud-row hud-act" data-hud-key="R"><span class="key">R</span>                 <span>reset cloth</span></div>
-  <div class="hud-row hud-act" data-hud-key="W" id="hudRowWind"><span class="key">W</span> <span>enable wind</span></div>
-  <div class="hud-row hud-act" data-hud-key="S"><span class="key">S</span>                 <span>save image</span></div>
-  <div class="hud-row hud-act" data-hud-key="G" id="hudRowGrain"><span class="key">G</span><span>toggle grain</span></div>
-  <div class="hud-row hud-act" data-hud-key="H"><span class="key">H</span>                 <span>hide HUD</span></div>
-
-  <div class="hud-sep"></div>
-
-  <div class="hud-modes">
-    <span id="modeWind"  class="mode-badge">WIND ON</span>
-    <span id="modeTear"  class="mode-badge">TEAR MODE</span>
-    <span id="modeMic"   class="mode-badge">MIC <span class="mic-meter" id="micMeter"></span></span>
-    <span id="modeGrain" class="mode-badge">GRAIN</span>
+    <div class="hud-modes">
+      <span id="modeWind"  class="mode-badge">WIND ON</span>
+      <span id="modeTear"  class="mode-badge">TEAR MODE</span>
+      <span id="modeMic"   class="mode-badge">MIC <span class="mic-meter" id="micMeter"></span></span>
+      <span id="modeGrain" class="mode-badge">GRAIN</span>
+    </div>
   </div>
 
   <div id="hud-texture">
