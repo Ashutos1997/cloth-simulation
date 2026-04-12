@@ -260,6 +260,9 @@
     #mob-header { display: none; }
     #mob-nav    { display: none; }
 
+    /* ── Effects sheet + backdrop — hidden outside mobile media query ── */
+    #fx-backdrop, #fx-sheet { display: none; }
+
     /* ── Bottom tools section — pinned to bottom ── */
     #hud-texture {
       margin-top: auto;
@@ -423,7 +426,9 @@
       .mob-btn.active { color: #111; }
       .mob-btn:active  { color: #444; }
 
-      /* ── Effects bottom sheet ── */
+      /* ── Effects bottom sheet — re-enable inside mobile query ── */
+      #fx-backdrop, #fx-sheet { display: block; }
+
       #fx-backdrop {
         position: fixed;
         inset: 0;
@@ -1259,10 +1264,11 @@ class Cloth {
       overlay.style.cssText = `position:fixed;top:${headerH}px;left:0;width:${cw}px;height:${ch}px;z-index:2;pointer-events:none`;
       document.body.style.overflow = 'hidden';
     } else {
-      cw = window.innerWidth;
+      const panelW = 280;
+      cw = window.innerWidth - panelW;
       ch = window.innerHeight;
-      canvas.style.cssText  = '';
-      overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;display:block';
+      canvas.style.cssText  = `position:fixed;top:0;left:${panelW}px;width:${cw}px;height:${ch}px;`;
+      overlay.style.cssText = `position:fixed;top:0;left:${panelW}px;width:${cw}px;height:${ch}px;pointer-events:none;display:block`;
       document.body.style.overflow = '';
     }
     canvas.width   = cw;
