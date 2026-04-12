@@ -1322,8 +1322,8 @@ class Cloth {
   let glowAt       = 0;
 
   /* Convert a viewport-relative clientX/Y into canvas-local coordinates.
-     On desktop the canvas is at 0,0 so this is a no-op; on mobile the canvas
-     is offset so we must subtract its bounding rect position. */
+     The canvas starts at x=280px on desktop and is offset by the header on mobile,
+     so we always subtract its bounding rect to get the correct local position. */
   function canvasPos(clientX, clientY) {
     const r = canvas.getBoundingClientRect();
     return { x: clientX - r.left, y: clientY - r.top };
