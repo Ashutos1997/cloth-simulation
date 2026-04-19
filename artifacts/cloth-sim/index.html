@@ -1661,6 +1661,50 @@ class Cloth {
     /* ── Overlay: 2D decorations ── */
     ctx2d.clearRect(0, 0, overlay.width, overlay.height);
 
+    /* ── Hanger ── drawn above the top pinned row of the cloth */
+    (function drawHanger() {
+      const ptL  = cloth.points[0];          // top-left  pinned point
+      const ptR  = cloth.points[COLS - 1];   // top-right pinned point
+      const bL   = ptL.x, bR = ptR.x, bY = ptL.y;
+      const mx   = (bL + bR) / 2;
+      const archH = Math.min(40, bY * 0.72); // how tall the shoulder arch rises
+      const peakY = bY - archH;
+      const hookR = 7;
+      const hookCY = peakY - hookR - 1;
+      const col = PREFERS_DARK ? 'rgba(200,200,200,0.50)' : 'rgba(55,55,55,0.50)';
+
+      ctx2d.save();
+      ctx2d.strokeStyle = col;
+      ctx2d.lineWidth   = 1.5;
+      ctx2d.lineCap     = 'round';
+      ctx2d.lineJoin    = 'round';
+
+      /* Crossbar + both shoulders in one path */
+      ctx2d.beginPath();
+      /* Left shoulder: from bar-left up to peak */
+      ctx2d.moveTo(bL, bY);
+      ctx2d.bezierCurveTo(bL, bY - archH * 0.38, mx - archH * 0.55, peakY, mx, peakY);
+      /* Right shoulder: from bar-right up to peak */
+      ctx2d.moveTo(bR, bY);
+      ctx2d.bezierCurveTo(bR, bY - archH * 0.38, mx + archH * 0.55, peakY, mx, peakY);
+      /* Hook stem */
+      ctx2d.moveTo(mx, peakY);
+      ctx2d.lineTo(mx, hookCY + hookR);
+      /* Crossbar end caps */
+      ctx2d.moveTo(bL,  bY - 4);
+      ctx2d.lineTo(bL,  bY + 4);
+      ctx2d.moveTo(bR,  bY - 4);
+      ctx2d.lineTo(bR,  bY + 4);
+      ctx2d.stroke();
+
+      /* Hook arc: from 6-o'clock counterclockwise ~270° to ~1:30-o'clock */
+      ctx2d.beginPath();
+      ctx2d.arc(mx, hookCY, hookR, Math.PI * 0.5, -Math.PI * 0.25, true);
+      ctx2d.stroke();
+
+      ctx2d.restore();
+    })();
+
     /* Cursor glow — skip entirely when user prefers reduced motion */
     if (!prefersReducedMotion) {
       /* Active drag radial gradient */
